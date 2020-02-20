@@ -1,0 +1,10 @@
+﻿---
+BasedOnStyle: Microsoft
+AlignConsecutiveAssignments: 'true'
+AlignConsecutiveDeclarations: 'false'
+AlignOperands: 'true'
+AlignTrailingComments: 'true'
+ColumnLimit: '80'
+Language: Cpp
+
+...
