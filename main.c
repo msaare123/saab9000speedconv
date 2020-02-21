@@ -59,8 +59,8 @@
 #define PWM_MODE_TOGGLE_ON_MATCH 0b10
 #define PWM_SC_HFOSC 0b01
 #define PWM_PRESCALER_16 0b100
-#define START_OUTPUT (PWM1CONbits.EN = 1)
-#define STOP_OUTPUT (PWM1CONbits.EN = 0)
+#define START_OUTPUT (PWM1CONbits.OE = 1)
+#define STOP_OUTPUT (PWM1CONbits.OE = 0)
 
 #define TRISA_INPUT 1
 #define TRISA_OUTPUT 0
@@ -73,7 +73,6 @@
 #define T1_PS_4 0b10
 
 #define TMR1_OVF_STOP_VALUE 255
-#define DUTY_CYCLE_50_PERCENT(x) (((x) + 1) / 2);
 
 typedef enum
 {
@@ -101,6 +100,7 @@ void __interrupt() ISR(void)
 {
     if (INTCONbits.INTF)
     {
+        PORTAbits.RA4 = !LATAbits.LATA4;
         // Interrupt pin interrupt
         // Clear interrupt flag
         INTCONbits.INTF = BIT_OFF;
@@ -133,22 +133,29 @@ Ret Init()
     /************************************************************************/
     /************************ Port register settings ************************/
     /************************************************************************/
-    // RA1 PWM 1 output
-    TRISA1 = TRISA_OUTPUT;
-    // RA2 input for interrupt
-    TRISA2 = TRISA_INPUT;
+    // Clear registers
+    PORTA = 0;
+    TRISA = 0;
+    ANSELA = 0;
+    // RA1 PWM 1 output, RA2 for interrupt
+    TRISA = (TRISA_INPUT << 2 | TRISA_OUTPUT << 1);
+ 
+    // General pull-up enable
+    OPTION_REGbits.nWPUEN = 0;
     // RA2 pullup
     WPUA2 = BIT_ON;
 
     /************************************************************************/
     /************************** Interrupt settings **************************/
     /************************************************************************/
-    // Enable interrupts, INT pin interrupt enable, Peripheral interrupt enable
-    INTCON = ((GIE) | (INTE) | (PEIE));
-    // Falling edge triggering
+     // Falling edge triggering
     OPTION_REGbits.INTEDG = TRIGGER_FALLING_EDGE;
     // Timer1 overflow interrupt
     PIE1bits.TMR1IE = BIT_ON;
+    // Enable interrupts, INT pin interrupt enable, Peripheral interrupt enable
+    INTCONbits.GIE = BIT_ON;
+    INTCONbits.INTE = BIT_ON;
+    INTCONbits.PEIE = BIT_ON;
 
     /************************************************************************/
     /*************************** Timer 1 settings ***************************/
@@ -167,8 +174,7 @@ Ret Init()
     PWM1CONbits.MODE  = PWM_MODE_TOGGLE_ON_MATCH;
     PWM1CONbits.OE    = BIT_ON; // Enable output to pin
     PWM1CONbits.EN    = BIT_ON; // Enable PWM1
-    PWM1PR            = 10000;
-    PWM1PH            = 5000;
+    PWM1PR            = 3000;
 
     return RET_OK;
 }
@@ -177,8 +183,6 @@ Ret SetOutputFrequency(uint16_t cycleTime_us)
 {
     // Period register
     PWM1PR = cycleTime_us;
-    // Phase register
-    PWM1PH = DUTY_CYCLE_50_PERCENT(cycleTime_us);
 
     return RET_OK;
 }
