@@ -73,7 +73,7 @@
 #define T1_PS_4 0b10
 
 #define TMR1_OVF_STOP_VALUE 255
-#define DUTY_CYCLE_50_PERCENT (cycleTime) (((cycleTime) + 1) / 2);
+#define DUTY_CYCLE_50_PERCENT(x) (((x) + 1) / 2);
 
 typedef enum
 {
@@ -123,6 +123,14 @@ void __interrupt() ISR(void)
 Ret Init()
 {
     /************************************************************************/
+    /************************** Clock settings ******************************/
+    /************************************************************************/
+    // 1110, Set clock to 8 MHz
+    OSCCONbits.IRCF = CLK_8_MHZ;
+    // Select Internal oscillator
+    OSCCONbits.SCS = CLK_SRC_INTOSC;
+
+    /************************************************************************/
     /************************ Port register settings ************************/
     /************************************************************************/
     // RA1 PWM 1 output
@@ -131,14 +139,6 @@ Ret Init()
     TRISA2 = TRISA_INPUT;
     // RA2 pullup
     WPUA2 = BIT_ON;
-
-    /************************************************************************/
-    /************************** Clock settings ******************************/
-    /************************************************************************/
-    // 1110, Set clock to 8 MHz
-    OSCCONbits.IRCF = CLK_8_MHZ;
-    // Select Internal oscillator
-    OSCCONbits.SCS = CLK_SRC_INTOSC;
 
     /************************************************************************/
     /************************** Interrupt settings **************************/
@@ -165,9 +165,10 @@ Ret Init()
     PWM1CLKCONbits.CS = PWM_SC_HFOSC; // 16 MHz
     PWM1CLKCONbits.PS = PWM_PRESCALER_16;
     PWM1CONbits.MODE  = PWM_MODE_TOGGLE_ON_MATCH;
-    PWM1CONbits.EN    = BIT_OFF; // Enable after we got input
-    PWM1PR            = 0;
-    PWM1PH            = 0;
+    PWM1CONbits.OE    = BIT_ON; // Enable output to pin
+    PWM1CONbits.EN    = BIT_ON; // Enable PWM1
+    PWM1PR            = 10000;
+    PWM1PH            = 5000;
 
     return RET_OK;
 }
