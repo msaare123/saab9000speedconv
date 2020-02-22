@@ -1,6 +1,6 @@
 ﻿---
 BasedOnStyle: Microsoft
-AlignConsecutiveAssignments: 'true'
+AlignConsecutiveAssignments: 'false'
 AlignConsecutiveDeclarations: 'false'
 AlignOperands: 'true'
 AlignTrailingComments: 'true'

@@ -97,7 +97,7 @@ volatile uint8_t gTmr1OverflowCount = 0;
 // Latest timestamp of signal edge in timer 1 microseconds
 volatile uint16_t gLatestEdgeTimestamp_us = 0;
 // Current output time
-volatile uint16_t gOutputPeriodTime_us    = 0;
+volatile uint16_t gOutputPeriodTime_us = 0;
 volatile uint16_t gOutputDutyCycleTime_us = 0;
 
 /* Init function */
@@ -178,8 +178,8 @@ Ret Init()
     /************************ Port register settings ************************/
     /************************************************************************/
     // Clear registers
-    PORTA  = 0;
-    TRISA  = 0;
+    PORTA = 0;
+    TRISA = 0;
     ANSELA = 0;
     // RA1 PWM 1 output, RA2 for interrupt
     TRISA = (TRISA_INPUT << 2 | TRISA_OUTPUT << 1);
@@ -192,7 +192,7 @@ Ret Init()
     // Timer1 overflow interrupt
     PIE1bits.TMR1IE = BIT_ON;
     // Enable interrupts, INT pin interrupt enable, Peripheral interrupt enable
-    INTCONbits.GIE  = BIT_ON;
+    INTCONbits.GIE = BIT_ON;
     INTCONbits.INTE = BIT_ON;
     INTCONbits.PEIE = BIT_ON;
 
@@ -200,23 +200,23 @@ Ret Init()
     /*************************** Timer 1 settings ***************************/
     /************************************************************************/
     // Counts microseconds
-    T1CONbits.TMR1ON  = BIT_ON;      // Timer 1 on
-    T1CONbits.TMR1CS  = T1_CS_CLK_4; // Using Clk/4
-    T1CONbits.T1CKPS  = T1_PS_4;     // Prescaler 1/4
-    T1GCONbits.TMR1GE = BIT_OFF;     // Not using as counter
+    T1CONbits.TMR1ON = BIT_ON;      // Timer 1 on
+    T1CONbits.TMR1CS = T1_CS_CLK_4; // Using Clk/4
+    T1CONbits.T1CKPS = T1_PS_4;     // Prescaler 1/4
+    T1GCONbits.TMR1GE = BIT_OFF;    // Not using as counter
 
     /************************************************************************/
     /**************************** PWM 1 settings ****************************/
     /************************************************************************/
     PWM1CLKCONbits.CS = PWM_SC_HFOSC; // 16 MHz
     PWM1CLKCONbits.PS = PWM_PRESCALER_16;
-    PWM1CONbits.MODE  = PWM_MODE_TOGGLE_ON_MATCH;
-    PIE3bits.PWM1IE   = BIT_ON;
+    PWM1CONbits.MODE = PWM_MODE_TOGGLE_ON_MATCH;
+    PIE3bits.PWM1IE = BIT_ON;
     PWM1INTEbits.PRIE = BIT_ON;
-    PWM1CONbits.OE    = BIT_ON; // Enable output to pin
-    PWM1CONbits.EN    = BIT_ON; // Enable PWM1
-    PWM1PR            = 10;
-    PWM1PH            = 5;
+    PWM1CONbits.OE = BIT_ON; // Enable output to pin
+    PWM1CONbits.EN = BIT_ON; // Enable PWM1
+    PWM1PR = 10;
+    PWM1PH = 5;
 
     return RET_OK;
 }
@@ -225,7 +225,7 @@ Ret SetOutputFrequency(uint16_t cycleTime_us)
 {
     if (cycleTime_us > 1)
     {
-        gOutputPeriodTime_us    = cycleTime_us;
+        gOutputPeriodTime_us = cycleTime_us;
         gOutputDutyCycleTime_us = DUTY_CYCLE_50_PERCENT(cycleTime_us);
         // Enable interrupt where new time is set
         PWM1INTEbits.PRIE = BIT_ON;
@@ -248,12 +248,12 @@ int main(int argc, char **argv)
     while (TRUE)
     {
         // Timestamp of last read event
-        static bool8 bUnreliableTimestamps          = TRUE;
-        static uint16_t nextValueUpdateTimestamp    = 0;
+        static bool8 bUnreliableTimestamps = TRUE;
+        static uint16_t nextValueUpdateTimestamp = 0;
         static uint16_t inputCycleTimeBuffer_us[10] = {UINT16_MAX};
         if (TMR1 > nextValueUpdateTimestamp)
         {
-            bUnreliableTimestamps         = TRUE;
+            bUnreliableTimestamps = TRUE;
             uint32_t cumulativeTimestamps = 0;
             // Calculate average time from buffer timestamps
             for (uint8_t i = 0; i < BUFFER_LENGTH; i++)
@@ -284,7 +284,7 @@ int main(int argc, char **argv)
         }
 
         static uint16_t lastEdgeTimestamp_us = 0;
-        static uint8_t bufferIndex           = 0;
+        static uint8_t bufferIndex = 0;
         if (gLatestEdgeTimestamp_us != lastEdgeTimestamp_us)
         {
             uint16_t newEdgeTimeStamp_us = gLatestEdgeTimestamp_us;
@@ -304,7 +304,7 @@ int main(int argc, char **argv)
                 bUnreliableTimestamps = FALSE;
             }
             lastEdgeTimestamp_us = newEdgeTimeStamp_us;
-            gTmr1OverflowCount   = 0;
+            gTmr1OverflowCount = 0;
         }
         else if (gTmr1OverflowCount > 1)
         {
