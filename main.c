@@ -19,7 +19,7 @@
 // Watchdog Timer Enable (WDT disabled)
 #pragma config WDTE = OFF
 // Power-up Timer Enable (PWRT disabled)
-#pragma config PWRTE = OFF
+#pragma config PWRTE = ON
 // MCLR Pin Function Select (MCLR/VPP pin function is MCLR)
 #pragma config MCLRE = ON
 // Flash Program Memory Code Protection (Program memory code protection is
