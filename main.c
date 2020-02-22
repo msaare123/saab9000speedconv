@@ -59,6 +59,9 @@
 #define PWM_MODE_TOGGLE_ON_MATCH 0b10
 #define PWM_SC_HFOSC 0b01
 #define PWM_PRESCALER_16 0b100
+#define PWM_PRESCALER_8  0b011
+#define PWM_PRESCALER_4  0b010
+#define PWM_PRESCALER_2  0b001
 #define START_OUTPUT (PWM1CONbits.OE = 1)
 #define STOP_OUTPUT (PWM1CONbits.OE = 0)
 
@@ -73,6 +76,7 @@
 #define T1_PS_4 0b10
 
 #define TMR1_OVF_STOP_VALUE 255
+#define DUTY_CYCLE_50_PERCENT(x) (((x) - 1) / 2)
 
 typedef enum
 {
@@ -83,6 +87,8 @@ typedef enum
 volatile uint8_t gTmr1OverflowCount = 0;
 // Latest timestamp of signal edge in timer 1 microseconds
 volatile uint16_t gLatestEdgeTimestamp_us = 0;
+// Current output time
+volatile uint16_t gOutputCycletime_us = 0;
 
 /* Init function */
 /* Called before any other function*/
@@ -100,7 +106,6 @@ void __interrupt() ISR(void)
 {
     if (INTCONbits.INTF)
     {
-        PORTAbits.RA4 = !LATAbits.LATA4;
         // Interrupt pin interrupt
         // Clear interrupt flag
         INTCONbits.INTF = BIT_OFF;
@@ -116,6 +121,32 @@ void __interrupt() ISR(void)
         if (gTmr1OverflowCount < TMR1_OVF_STOP_VALUE)
         {
             gTmr1OverflowCount++;
+        }
+    }
+    else if (PWM1INTFbits.PRIF)
+    {
+        // PWM1 period interrupt
+        // Clear interrupt flag
+        PWM1INTFbits.PRIF = BIT_OFF;
+        
+        // When frequency has changed and output is low
+        // This ensures clean frequency change
+        if (!PWM1OUT)
+        {
+            // Set new cycle time to PWM1 module
+            // No need to clear timer register because we have just 
+            // gotten a full period
+            PORTAbits.RA4 = !LATAbits.LATA4;
+            // Disable pwm
+            PWM1EN = BIT_OFF;
+            // Period register
+            PWM1PR = gOutputCycletime_us;
+            // Phase register
+            PWM1PH = DUTY_CYCLE_50_PERCENT(gOutputCycletime_us);
+            // Enable pwm
+            PWM1EN = BIT_ON;
+            // Disable this interrupt
+            PWM1INTEbits.PRIE = BIT_OFF;
         }
     }
 }
@@ -172,17 +203,21 @@ Ret Init()
     PWM1CLKCONbits.CS = PWM_SC_HFOSC; // 16 MHz
     PWM1CLKCONbits.PS = PWM_PRESCALER_16;
     PWM1CONbits.MODE  = PWM_MODE_TOGGLE_ON_MATCH;
+    PIE3bits.PWM1IE = BIT_ON;
+    PWM1INTEbits.PRIE = BIT_ON;
     PWM1CONbits.OE    = BIT_ON; // Enable output to pin
     PWM1CONbits.EN    = BIT_ON; // Enable PWM1
-    PWM1PR            = 3000;
+    PWM1PR            = 10;
+    PWM1PH            = 5;
 
     return RET_OK;
 }
 
 Ret SetOutputFrequency(uint16_t cycleTime_us)
 {
-    // Period register
-    PWM1PR = cycleTime_us;
+    gOutputCycletime_us = cycleTime_us;
+    // Enable interrupt where new time is set
+    PWM1INTEbits.PRIE = BIT_ON;
 
     return RET_OK;
 }
