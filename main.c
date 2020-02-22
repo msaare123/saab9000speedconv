@@ -258,6 +258,7 @@ int main(int argc, char **argv)
                     (void)SetOutputFrequency(outputCycleTime_us);
                     lastSetOutputCycleTime_us = outputCycleTime_us;
                 }
+                START_OUTPUT;
             }
             else
             {
