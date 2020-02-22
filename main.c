@@ -59,11 +59,11 @@
 #define PWM_MODE_TOGGLE_ON_MATCH 0b10
 #define PWM_SC_HFOSC 0b01
 #define PWM_PRESCALER_16 0b100
-#define PWM_PRESCALER_8  0b011
-#define PWM_PRESCALER_4  0b010
-#define PWM_PRESCALER_2  0b001
-#define START_OUTPUT (PWM1CONbits.OE = 1)
-#define STOP_OUTPUT (PWM1CONbits.OE = 0)
+#define PWM_PRESCALER_8 0b011
+#define PWM_PRESCALER_4 0b010
+#define PWM_PRESCALER_2 0b001
+#define START_OUTPUT (PWM1CONbits.EN = 1)
+#define STOP_OUTPUT (PWM1CONbits.EN = 0)
 
 #define TRISA_INPUT 1
 #define TRISA_OUTPUT 0
@@ -76,7 +76,7 @@
 #define T1_PS_4 0b10
 
 #define TMR1_OVF_STOP_VALUE 255
-#define DUTY_CYCLE_50_PERCENT(x) (((x) - 1) / 2)
+#define DUTY_CYCLE_50_PERCENT(x) (((x)-1) / 2)
 
 typedef enum
 {
@@ -88,7 +88,8 @@ volatile uint8_t gTmr1OverflowCount = 0;
 // Latest timestamp of signal edge in timer 1 microseconds
 volatile uint16_t gLatestEdgeTimestamp_us = 0;
 // Current output time
-volatile uint16_t gOutputCycletime_us = 0;
+volatile uint16_t gOutputPeriodTime_us    = 0;
+volatile uint16_t gOutputDutyCycleTime_us = 0;
 
 /* Init function */
 /* Called before any other function*/
@@ -106,6 +107,7 @@ void __interrupt() ISR(void)
 {
     if (INTCONbits.INTF)
     {
+        PORTAbits.RA4 = !LATAbits.LATA4;
         // Interrupt pin interrupt
         // Clear interrupt flag
         INTCONbits.INTF = BIT_OFF;
@@ -128,21 +130,20 @@ void __interrupt() ISR(void)
         // PWM1 period interrupt
         // Clear interrupt flag
         PWM1INTFbits.PRIF = BIT_OFF;
-        
+
         // When frequency has changed and output is low
         // This ensures clean frequency change
         if (!PWM1OUT)
         {
             // Set new cycle time to PWM1 module
-            // No need to clear timer register because we have just 
+            // No need to clear timer register because we have just
             // gotten a full period
-            PORTAbits.RA4 = !LATAbits.LATA4;
             // Disable pwm
             PWM1EN = BIT_OFF;
             // Period register
-            PWM1PR = gOutputCycletime_us;
+            PWM1PR = gOutputPeriodTime_us;
             // Phase register
-            PWM1PH = DUTY_CYCLE_50_PERCENT(gOutputCycletime_us);
+            PWM1PH = gOutputDutyCycleTime_us;
             // Enable pwm
             PWM1EN = BIT_ON;
             // Disable this interrupt
@@ -165,12 +166,12 @@ Ret Init()
     /************************ Port register settings ************************/
     /************************************************************************/
     // Clear registers
-    PORTA = 0;
-    TRISA = 0;
+    PORTA  = 0;
+    TRISA  = 0;
     ANSELA = 0;
     // RA1 PWM 1 output, RA2 for interrupt
     TRISA = (TRISA_INPUT << 2 | TRISA_OUTPUT << 1);
- 
+
     // General pull-up enable
     OPTION_REGbits.nWPUEN = 0;
     // RA2 pullup
@@ -179,12 +180,12 @@ Ret Init()
     /************************************************************************/
     /************************** Interrupt settings **************************/
     /************************************************************************/
-     // Falling edge triggering
+    // Falling edge triggering
     OPTION_REGbits.INTEDG = TRIGGER_FALLING_EDGE;
     // Timer1 overflow interrupt
     PIE1bits.TMR1IE = BIT_ON;
     // Enable interrupts, INT pin interrupt enable, Peripheral interrupt enable
-    INTCONbits.GIE = BIT_ON;
+    INTCONbits.GIE  = BIT_ON;
     INTCONbits.INTE = BIT_ON;
     INTCONbits.PEIE = BIT_ON;
 
@@ -203,7 +204,7 @@ Ret Init()
     PWM1CLKCONbits.CS = PWM_SC_HFOSC; // 16 MHz
     PWM1CLKCONbits.PS = PWM_PRESCALER_16;
     PWM1CONbits.MODE  = PWM_MODE_TOGGLE_ON_MATCH;
-    PIE3bits.PWM1IE = BIT_ON;
+    PIE3bits.PWM1IE   = BIT_ON;
     PWM1INTEbits.PRIE = BIT_ON;
     PWM1CONbits.OE    = BIT_ON; // Enable output to pin
     PWM1CONbits.EN    = BIT_ON; // Enable PWM1
@@ -215,9 +216,13 @@ Ret Init()
 
 Ret SetOutputFrequency(uint16_t cycleTime_us)
 {
-    gOutputCycletime_us = cycleTime_us;
-    // Enable interrupt where new time is set
-    PWM1INTEbits.PRIE = BIT_ON;
+    if (cycleTime_us > 1)
+    {
+        gOutputPeriodTime_us    = cycleTime_us;
+        gOutputDutyCycleTime_us = DUTY_CYCLE_50_PERCENT(cycleTime_us);
+        // Enable interrupt where new time is set
+        PWM1INTEbits.PRIE = BIT_ON;
+    }
 
     return RET_OK;
 }
@@ -237,27 +242,23 @@ int main(int argc, char **argv)
     {
         // Timestamp of last read event
         static uint16_t lastEdgeTimestamp_us = 0;
-        if ((gLatestEdgeTimestamp_us != lastEdgeTimestamp_us) ||
-            (gTmr1OverflowCount > 0))
+        if (gLatestEdgeTimestamp_us != lastEdgeTimestamp_us)
         {
             uint16_t newEdgeTimeStamp_us = gLatestEdgeTimestamp_us;
-            if (gTmr1OverflowCount < 2)
-            {
-                // New event stored
-                uint16_t inputCycleTime_us =
-                    newEdgeTimeStamp_us - lastEdgeTimestamp_us;
-                lastEdgeTimestamp_us = newEdgeTimeStamp_us;
-                gTmr1OverflowCount   = 0;
-                // Calculate new output cycle time
-                uint16_t outputCycleTime_us = ABSToSpeedo_us(inputCycleTime_us);
-                // Set new output
-                (void)SetOutputFrequency(outputCycleTime_us);
-                START_OUTPUT;
-            }
-            else
-            {
-                STOP_OUTPUT;
-            }
+            // New event stored
+            uint16_t inputCycleTime_us =
+                newEdgeTimeStamp_us - lastEdgeTimestamp_us;
+            lastEdgeTimestamp_us = newEdgeTimeStamp_us;
+            gTmr1OverflowCount   = 0;
+            // Calculate new output cycle time
+            uint16_t outputCycleTime_us = ABSToSpeedo_us(inputCycleTime_us);
+            // Set new output
+            (void)SetOutputFrequency(outputCycleTime_us);
+            START_OUTPUT;
+        }
+        else if (gTmr1OverflowCount > 5)
+        {
+            STOP_OUTPUT;
         }
     }
     return (EXIT_SUCCESS);
