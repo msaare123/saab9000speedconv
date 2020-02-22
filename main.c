@@ -77,6 +77,8 @@
 
 #define TMR1_OVF_STOP_VALUE 255
 #define DUTY_CYCLE_50_PERCENT(x) (((x)-1) / 2)
+// Input time limit limited by conversion multiplier
+#define INPUT_CYCLE_TIME_LIMIT ((UINT16_MAX / ABS_TO_SPEEDO_DIVIDER) * 1000)
 
 typedef enum
 {
@@ -172,11 +174,6 @@ Ret Init()
     // RA1 PWM 1 output, RA2 for interrupt
     TRISA = (TRISA_INPUT << 2 | TRISA_OUTPUT << 1);
 
-    // General pull-up enable
-    OPTION_REGbits.nWPUEN = 0;
-    // RA2 pullup
-    WPUA2 = BIT_ON;
-
     /************************************************************************/
     /************************** Interrupt settings **************************/
     /************************************************************************/
@@ -229,8 +226,8 @@ Ret SetOutputFrequency(uint16_t cycleTime_us)
 
 uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
 {
-    return (uint16_t)(((uint32_t)inputCycleTime_us * 1000) /
-                      ABS_TO_SPEEDO_DIVIDER);
+    return (uint16_t)(((uint32_t)inputCycleTime_us * ABS_TO_SPEEDO_DIVIDER) /
+                      1000);
 }
 
 int main(int argc, char **argv)
@@ -251,12 +248,23 @@ int main(int argc, char **argv)
             lastEdgeTimestamp_us = newEdgeTimeStamp_us;
             gTmr1OverflowCount   = 0;
             // Calculate new output cycle time
-            uint16_t outputCycleTime_us = ABSToSpeedo_us(inputCycleTime_us);
-            // Set new output
-            (void)SetOutputFrequency(outputCycleTime_us);
-            START_OUTPUT;
+            if (inputCycleTime_us < INPUT_CYCLE_TIME_LIMIT)
+            {
+                uint16_t outputCycleTime_us = ABSToSpeedo_us(inputCycleTime_us);
+                static uint16_t lastSetOutputCycleTime_us = 0;
+                // Set new output
+                if (outputCycleTime_us != lastSetOutputCycleTime_us)
+                {
+                    (void)SetOutputFrequency(outputCycleTime_us);
+                    lastSetOutputCycleTime_us = outputCycleTime_us;
+                }
+            }
+            else
+            {
+                STOP_OUTPUT;
+            }
         }
-        else if (gTmr1OverflowCount > 5)
+        else if (gTmr1OverflowCount > 1)
         {
             STOP_OUTPUT;
         }
