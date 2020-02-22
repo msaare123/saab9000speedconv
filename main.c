@@ -79,7 +79,7 @@
 #define T1_PS_1 0b00
 
 #define TMR1_OVF_STOP_VALUE 255
-#define DUTY_CYCLE_50_PERCENT(x) (((x)-1) / 2)
+#define DUTY_CYCLE_50_PERCENT(x) (((x) + 1) / 2)
 // Input time limit limited by conversion multiplier
 #define INPUT_CYCLE_TIME_LIMIT ((UINT16_MAX / ABS_TO_SPEEDO_DIVIDER) * 1000)
 #define OUTPUT_UPDATE_INTERVAL_US 50000
@@ -100,6 +100,8 @@ volatile uint16_t gLatestEdgeTimestamp_us = 0;
 volatile uint16_t gOutputPeriodTime_us = 0;
 volatile uint16_t gOutputDutyCycleTime_us = 0;
 
+uint16_t gInputCycleTimeBuffer_us[BUFFER_LENGTH] = {UINT16_MAX};
+
 /* Init function */
 /* Called before any other function*/
 Ret Init();
@@ -111,6 +113,11 @@ uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us);
 /* Sets new output frequency */
 Ret SetOutputFrequency(uint16_t cycleTime_us);
 
+/* Calculates average value of buffer */
+uint16_t CalculateBufferAverage();
+
+/* Adds value to buffer */
+inline void AddValueToBuffer(uint16_t value);
 /*****************************************************************************/
 void __interrupt() ISR(void)
 {
@@ -234,10 +241,39 @@ Ret SetOutputFrequency(uint16_t cycleTime_us)
     return RET_OK;
 }
 
-uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
+inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
 {
     return (uint16_t)(((uint32_t)inputCycleTime_us * ABS_TO_SPEEDO_DIVIDER) /
                       1000);
+}
+
+inline uint16_t CalculateBufferAverage()
+{
+    uint16_t ret = 0;
+    if (gInputCycleTimeBuffer_us != NULL)
+    {
+        uint32_t cumulativeValue = 0;
+        for (uint8_t i = 0; i < BUFFER_LENGTH; i++)
+        {
+            cumulativeValue += gInputCycleTimeBuffer_us[i];
+        }
+        ret =
+            (uint16_t)((cumulativeValue + (BUFFER_LENGTH / 2)) / BUFFER_LENGTH);
+    }
+
+    return ret;
+}
+
+inline void AddValueToBuffer(uint16_t value)
+{
+    static uint8_t bufferIndex = 0;
+
+    gInputCycleTimeBuffer_us[bufferIndex] = value;
+    bufferIndex++;
+    if (bufferIndex >= BUFFER_LENGTH)
+    {
+        bufferIndex = 0;
+    }
 }
 
 int main(int argc, char **argv)
@@ -250,18 +286,13 @@ int main(int argc, char **argv)
         // Timestamp of last read event
         static bool8 bUnreliableTimestamps = TRUE;
         static uint16_t nextValueUpdateTimestamp = 0;
-        static uint16_t inputCycleTimeBuffer_us[10] = {UINT16_MAX};
         if (TMR1 > nextValueUpdateTimestamp)
         {
             bUnreliableTimestamps = TRUE;
-            uint32_t cumulativeTimestamps = 0;
+
             // Calculate average time from buffer timestamps
-            for (uint8_t i = 0; i < BUFFER_LENGTH; i++)
-            {
-                cumulativeTimestamps += inputCycleTimeBuffer_us[i];
-            }
-            uint16_t averageCycletime =
-                (uint16_t)(cumulativeTimestamps / BUFFER_LENGTH);
+            uint16_t averageCycletime = CalculateBufferAverage();
+
             // Calculate new output cycle time
             if (averageCycletime < INPUT_CYCLE_TIME_LIMIT)
             {
@@ -284,20 +315,13 @@ int main(int argc, char **argv)
         }
 
         static uint16_t lastEdgeTimestamp_us = 0;
-        static uint8_t bufferIndex = 0;
         if (gLatestEdgeTimestamp_us != lastEdgeTimestamp_us)
         {
             uint16_t newEdgeTimeStamp_us = gLatestEdgeTimestamp_us;
             // New event stored
             if (!bUnreliableTimestamps)
             {
-                inputCycleTimeBuffer_us[bufferIndex] =
-                    newEdgeTimeStamp_us - lastEdgeTimestamp_us;
-                bufferIndex++;
-                if (bufferIndex >= BUFFER_LENGTH)
-                {
-                    bufferIndex = 0;
-                }
+                AddValueToBuffer(newEdgeTimeStamp_us - lastEdgeTimestamp_us);
             }
             else
             {
