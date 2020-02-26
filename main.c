@@ -84,6 +84,7 @@
 #define INPUT_CYCLE_TIME_LIMIT ((UINT16_MAX / ABS_TO_SPEEDO_DIVIDER) * 1000)
 #define OUTPUT_UPDATE_INTERVAL_US 50000
 #define BUFFER_LENGTH 10
+#define DIFFERENCE_16BIT(x, y) (abs((int16_t)((x) - (y))))
 
 typedef enum
 {
@@ -92,10 +93,8 @@ typedef enum
 
 typedef uint8_t bool8;
 
-// Timer 1 overflow count since last read value
-volatile uint8_t gTmr1OverflowCount = 0;
-// Latest timestamp of signal edge in timer 1 microseconds
-volatile uint16_t gLatestEdgeTimestamp_us = 0;
+// Timer 1 has overflown
+volatile bool8 gbStopped = FALSE;
 // Current output time
 volatile uint16_t gOutputPeriodTime_us = 0;
 volatile uint16_t gOutputDutyCycleTime_us = 0;
@@ -121,13 +120,16 @@ inline void AddValueToBuffer(uint16_t value);
 /*****************************************************************************/
 void __interrupt() ISR(void)
 {
-    if (INTCONbits.INTF)
+    if (PIR1bits.TMR1GIF)
     {
-        // Interrupt pin interrupt
+        // TMR1 gate interrupt. Acquire ready.
         // Clear interrupt flag
-        INTCONbits.INTF = BIT_OFF;
-        // Take edge timestamp from timer1
-        gLatestEdgeTimestamp_us = TMR1;
+        PIR1bits.TMR1GIF = BIT_OFF;
+        AddValueToBuffer(TMR1);
+        TMR1 = 0;
+        // Ready for new cycle time acquisition
+        T1GCONbits.T1GGO = BIT_ON;
+        gbStopped = FALSE;
     }
     else if (PWM1INTFbits.PRIF)
     {
@@ -163,11 +165,7 @@ void __interrupt() ISR(void)
         // Timer 1 overflow interrupt
         // Clear interrupt flag
         PIR1bits.TMR1IF = BIT_OFF;
-        // Increase overflow count
-        if (gTmr1OverflowCount < TMR1_OVF_STOP_VALUE)
-        {
-            gTmr1OverflowCount++;
-        }
+        gbStopped = TRUE;
     }
 }
 
@@ -188,29 +186,41 @@ Ret Init()
     PORTA = 0;
     TRISA = 0;
     ANSELA = 0;
-    // RA1 PWM 1 output, RA2 for interrupt
-    TRISA = (TRISA_INPUT << 2 | TRISA_OUTPUT << 1);
+    // RA1 PWM 1 output, RA4 for timer gate
+    TRISA = (TRISA_INPUT << 4 | TRISA_OUTPUT << 1);
 
     /************************************************************************/
     /************************** Interrupt settings **************************/
     /************************************************************************/
-    // Falling edge triggering
-    OPTION_REGbits.INTEDG = TRIGGER_FALLING_EDGE;
-    // Timer1 overflow interrupt
-    PIE1bits.TMR1IE = BIT_ON;
-    // Enable interrupts, INT pin interrupt enable, Peripheral interrupt enable
+    // Enable interrupts, Peripheral interrupt enable
     INTCONbits.GIE = BIT_ON;
-    INTCONbits.INTE = BIT_ON;
+    PIE1bits.TMR1GIE = BIT_ON; // Timer gate interrupt enable
+    PIE1bits.TMR1IE = BIT_ON;  // Timer overflow interrupt enable
     INTCONbits.PEIE = BIT_ON;
 
     /************************************************************************/
     /*************************** Timer 1 settings ***************************/
     /************************************************************************/
     // Counts microseconds
-    T1CONbits.TMR1ON = BIT_ON;      // Timer 1 on
-    T1CONbits.TMR1CS = T1_CS_CLK_4; // Using Clk/4
+    T1CONbits.TMR1CS = T1_CS_CLK_4; // Using Clk/4, Clk = 16 Mhz
     T1CONbits.T1CKPS = T1_PS_4;     // Prescaler 1/4
-    T1GCONbits.TMR1GE = BIT_OFF;    // Not using as counter
+    // Configure to single pulse gate mode
+    // Timer 1 source from RA4
+    T1GCONbits.T1GSS = 0b00;
+    // Timer 1 on
+    T1CONbits.TMR1ON = BIT_ON;
+    // Gate toggle mode
+    T1GCONbits.T1GTM = BIT_ON;
+    // Falling edge
+    T1GCONbits.T1GPOL = BIT_OFF;
+    // Gate enable
+    T1GCONbits.TMR1GE = BIT_ON;
+    // Gate single mode
+    T1GCONbits.T1GSPM = BIT_ON;
+    // Reset timer value
+    TMR1 = 0;
+    // Ready to acquire
+    T1GCONbits.T1GGO = BIT_ON;
 
     /************************************************************************/
     /**************************** PWM 1 settings ****************************/
@@ -283,54 +293,26 @@ int main(int argc, char **argv)
 
     while (TRUE)
     {
-        // Timestamp of last read event
-        static bool8 bUnreliableTimestamps = TRUE;
-        static uint16_t nextValueUpdateTimestamp = 0;
-        if (TMR1 > nextValueUpdateTimestamp)
+        // Calculate average time from buffer timestamps
+        uint16_t averageCycletime = CalculateBufferAverage();
+
+        // Calculate new output cycle time
+        if (averageCycletime < INPUT_CYCLE_TIME_LIMIT && !gbStopped)
         {
-            bUnreliableTimestamps = TRUE;
-
-            // Calculate average time from buffer timestamps
-            uint16_t averageCycletime = CalculateBufferAverage();
-
-            // Calculate new output cycle time
-            if (averageCycletime < INPUT_CYCLE_TIME_LIMIT)
+            uint16_t outputCycleTime_us = ABSToSpeedo_us(averageCycletime);
+            static uint16_t lastSetOutputCycleTime_us = 0;
+            // Set new output if it differs from last one by 2 %
+            uint16_t cycletimeThreshold_us = lastSetOutputCycleTime_us / 200;
+            if (DIFFERENCE_16BIT(outputCycleTime_us,
+                                 lastSetOutputCycleTime_us) >
+                cycletimeThreshold_us)
             {
-                uint16_t outputCycleTime_us = ABSToSpeedo_us(averageCycletime);
-                static uint16_t lastSetOutputCycleTime_us = 0;
-                // Set new output
-                if (outputCycleTime_us != lastSetOutputCycleTime_us)
-                {
-                    (void)SetOutputFrequency(outputCycleTime_us);
-                    lastSetOutputCycleTime_us = outputCycleTime_us;
-                }
-                START_OUTPUT;
+                (void)SetOutputFrequency(outputCycleTime_us);
+                lastSetOutputCycleTime_us = outputCycleTime_us;
             }
-            else
-            {
-                STOP_OUTPUT;
-            }
-
-            nextValueUpdateTimestamp = TMR1 + OUTPUT_UPDATE_INTERVAL_US;
+            START_OUTPUT;
         }
-
-        static uint16_t lastEdgeTimestamp_us = 0;
-        if (gLatestEdgeTimestamp_us != lastEdgeTimestamp_us)
-        {
-            uint16_t newEdgeTimeStamp_us = gLatestEdgeTimestamp_us;
-            // New event stored
-            if (!bUnreliableTimestamps)
-            {
-                AddValueToBuffer(newEdgeTimeStamp_us - lastEdgeTimestamp_us);
-            }
-            else
-            {
-                bUnreliableTimestamps = FALSE;
-            }
-            lastEdgeTimestamp_us = newEdgeTimeStamp_us;
-            gTmr1OverflowCount = 0;
-        }
-        else if (gTmr1OverflowCount > 1)
+        else
         {
             STOP_OUTPUT;
         }
