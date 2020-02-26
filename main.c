@@ -83,7 +83,7 @@
 // Input time limit limited by conversion multiplier
 #define INPUT_CYCLE_TIME_LIMIT ((UINT16_MAX / ABS_TO_SPEEDO_DIVIDER) * 1000)
 #define OUTPUT_UPDATE_INTERVAL_US 50000
-#define BUFFER_LENGTH 10
+#define BUFFER_LENGTH 5
 #define DIFFERENCE_16BIT(x, y) (abs((int16_t)((x) - (y))))
 
 typedef enum
@@ -259,31 +259,33 @@ inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
 
 inline uint16_t CalculateBufferAverage()
 {
+    // Disable TMR1 gate interrupt during calculation to ensure that buffer
+    // does not change
+    PIE1bits.TMR1GIE = BIT_OFF;
     uint16_t ret = 0;
-    if (gInputCycleTimeBuffer_us != NULL)
+    uint32_t cumulativeValueWithWeight = 0;
+    const static uint8_t weights = 15;
+    for (uint8_t i = 0; i < BUFFER_LENGTH; i++)
     {
-        uint32_t cumulativeValue = 0;
-        for (uint8_t i = 0; i < BUFFER_LENGTH; i++)
-        {
-            cumulativeValue += gInputCycleTimeBuffer_us[i];
-        }
-        ret =
-            (uint16_t)((cumulativeValue + (BUFFER_LENGTH / 2)) / BUFFER_LENGTH);
+        cumulativeValueWithWeight +=
+            (gInputCycleTimeBuffer_us[i] * (BUFFER_LENGTH - i));
     }
-
+    
+    ret = (uint16_t)((cumulativeValueWithWeight + (weights / 2)) / weights);
+    PIE1bits.TMR1GIE = BIT_ON;
     return ret;
 }
 
 inline void AddValueToBuffer(uint16_t value)
 {
-    static uint8_t bufferIndex = 0;
-
-    gInputCycleTimeBuffer_us[bufferIndex] = value;
-    bufferIndex++;
-    if (bufferIndex >= BUFFER_LENGTH)
+    // Move buffer forwards
+    for (uint8_t i = 1; i < BUFFER_LENGTH; i++)
     {
-        bufferIndex = 0;
+        gInputCycleTimeBuffer_us[BUFFER_LENGTH - i] =
+            gInputCycleTimeBuffer_us[BUFFER_LENGTH - i - 1];
     }
+
+    gInputCycleTimeBuffer_us[0] = value;
 }
 
 int main(int argc, char **argv)
