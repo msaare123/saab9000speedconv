@@ -150,7 +150,7 @@ void __interrupt() ISR(void)
             PWM1PR = gOutputPeriodTime_us;
             // Phase register
             PWM1PH = gOutputDutyCycleTime_us;
-            if (PWM1TMR >= PWM1PH)
+            if (PWM1TMR >= PWM1PR)
             {
                 PWM1TMR = 0;
             }
