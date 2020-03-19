@@ -55,7 +55,7 @@
 #define TRUE 1
 #define FALSE 0
 
-#define ABS_TO_SPEEDO_DIVIDER 2348 // 2,348
+#define ABS_TO_SPEEDO_DIVIDER 601 // 2,348 * 256
 #define PWM_MODE_TOGGLE_ON_MATCH 0b10
 #define PWM_SC_HFOSC 0b01
 #define PWM_PRESCALER_16 0b100
@@ -98,8 +98,7 @@ volatile bool8 gbStopped = FALSE;
 // Current output time
 volatile uint16_t gOutputPeriodTime_us = 0;
 volatile uint16_t gOutputDutyCycleTime_us = 0;
-
-uint16_t gInputCycleTimeBuffer_us[BUFFER_LENGTH] = {UINT16_MAX};
+volatile uint16_t gLastCapturedValue_us = 0;
 
 /* Init function */
 /* Called before any other function*/
@@ -112,26 +111,11 @@ uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us);
 /* Sets new output frequency */
 Ret SetOutputFrequency(uint16_t cycleTime_us);
 
-/* Calculates average value of buffer */
-uint16_t CalculateBufferAverage();
 
-/* Adds value to buffer */
-inline void AddValueToBuffer(uint16_t value);
 /*****************************************************************************/
 void __interrupt() ISR(void)
 {
-    if (PIR1bits.TMR1GIF)
-    {
-        // TMR1 gate interrupt. Acquire ready.
-        // Clear interrupt flag
-        PIR1bits.TMR1GIF = BIT_OFF;
-        AddValueToBuffer(TMR1);
-        TMR1 = 0;
-        // Ready for new cycle time acquisition
-        T1GCONbits.T1GGO = BIT_ON;
-        gbStopped = FALSE;
-    }
-    else if (PWM1INTFbits.PRIF)
+    if (PWM1INTFbits.PRIF)
     {
         // PWM1 period interrupt
         // Clear interrupt flag
@@ -160,7 +144,20 @@ void __interrupt() ISR(void)
             PWM1INTEbits.PRIE = BIT_OFF;
         }
     }
-    else if (PIR1bits.TMR1IF)
+
+    if (PIR1bits.TMR1GIF)
+    {
+        // TMR1 gate interrupt. Acquire ready.
+        // Clear interrupt flag
+        PIR1bits.TMR1GIF = BIT_OFF;
+        gLastCapturedValue_us = TMR1;
+        TMR1 = 0;
+        // Ready for new cycle time acquisition
+        T1GCONbits.T1GGO = BIT_ON;
+        gbStopped = FALSE;
+    }
+
+    if (PIR1bits.TMR1IF)
     {
         // Timer 1 overflow interrupt
         // Clear interrupt flag
@@ -187,7 +184,7 @@ Ret Init()
     TRISA = 0;
     ANSELA = 0;
     // RA1 PWM 1 output, RA4 for timer gate
-    TRISA = (TRISA_INPUT << 4 | TRISA_OUTPUT << 1);
+    TRISA = (TRISA_INPUT << 4 | TRISA_OUTPUT << 1 | TRISA_OUTPUT << 2);
 
     /************************************************************************/
     /************************** Interrupt settings **************************/
@@ -254,38 +251,7 @@ Ret SetOutputFrequency(uint16_t cycleTime_us)
 inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
 {
     return (uint16_t)(((uint32_t)inputCycleTime_us * ABS_TO_SPEEDO_DIVIDER) /
-                      1000);
-}
-
-inline uint16_t CalculateBufferAverage()
-{
-    // Disable TMR1 gate interrupt during calculation to ensure that buffer
-    // does not change
-    PIE1bits.TMR1GIE = BIT_OFF;
-    uint16_t ret = 0;
-    uint32_t cumulativeValueWithWeight = 0;
-    const static uint8_t weights = 15;
-    for (uint8_t i = 0; i < BUFFER_LENGTH; i++)
-    {
-        cumulativeValueWithWeight +=
-            (gInputCycleTimeBuffer_us[i] * (BUFFER_LENGTH - i));
-    }
-    
-    ret = (uint16_t)((cumulativeValueWithWeight + (weights / 2)) / weights);
-    PIE1bits.TMR1GIE = BIT_ON;
-    return ret;
-}
-
-inline void AddValueToBuffer(uint16_t value)
-{
-    // Move buffer forwards
-    for (uint8_t i = 1; i < BUFFER_LENGTH; i++)
-    {
-        gInputCycleTimeBuffer_us[BUFFER_LENGTH - i] =
-            gInputCycleTimeBuffer_us[BUFFER_LENGTH - i - 1];
-    }
-
-    gInputCycleTimeBuffer_us[0] = value;
+                      256);
 }
 
 int main(int argc, char **argv)
@@ -295,24 +261,22 @@ int main(int argc, char **argv)
 
     while (TRUE)
     {
-        // Calculate average time from buffer timestamps
-        uint16_t averageCycletime = CalculateBufferAverage();
-
         // Calculate new output cycle time
-        if (averageCycletime < INPUT_CYCLE_TIME_LIMIT && !gbStopped)
+        if (gLastCapturedValue_us < INPUT_CYCLE_TIME_LIMIT && !gbStopped)
         {
-            uint16_t outputCycleTime_us = ABSToSpeedo_us(averageCycletime);
-            static uint16_t lastSetOutputCycleTime_us = 0;
-            // Set new output if it differs from last one by 2 %
-            uint16_t cycletimeThreshold_us = lastSetOutputCycleTime_us / 200;
-            if (DIFFERENCE_16BIT(outputCycleTime_us,
-                                 lastSetOutputCycleTime_us) >
-                cycletimeThreshold_us)
+            static uint16_t lastSetValue_us = 0;
+            if (lastSetValue_us != gLastCapturedValue_us)
             {
+                INTCONbits.GIE = BIT_OFF;
+                PORTAbits.RA2 = 1;
+                uint16_t outputCycleTime_us =
+                    ABSToSpeedo_us(gLastCapturedValue_us);
                 (void)SetOutputFrequency(outputCycleTime_us);
-                lastSetOutputCycleTime_us = outputCycleTime_us;
+                START_OUTPUT;
+                lastSetValue_us = gLastCapturedValue_us;
+                PORTAbits.RA2 = 0;
+                INTCONbits.GIE = BIT_ON;
             }
-            START_OUTPUT;
         }
         else
         {
