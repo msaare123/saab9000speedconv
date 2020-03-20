@@ -78,11 +78,13 @@
 #define T1_PS_4 0b10
 #define T1_PS_2 0b01
 #define T1_PS_1 0b00
+#define T1_DIVIDER 2
 
 #define TMR1_OVF_STOP_VALUE 255
 #define DUTY_CYCLE_50_PERCENT(x) (((x) + 1) / 2)
 // Input time limit limited by conversion multiplier
-#define INPUT_CYCLE_TIME_LIMIT ((UINT16_MAX / ABS_TO_SPEEDO_DIVIDER) * 1000)
+#define INPUT_CYCLE_TIME_LIMIT                                                 \
+    (((UINT16_MAX / ABS_TO_SPEEDO_DIVIDER) * 256) / T1_DIVIDER)
 #define OUTPUT_UPDATE_INTERVAL_US 50000
 #define BUFFER_LENGTH 5
 #define DIFFERENCE_16BIT(x, y) (abs((int16_t)((x) - (y))))
@@ -153,7 +155,7 @@ void __interrupt() ISR(void)
         // TMR1 gate interrupt. Acquire ready.
         // Clear interrupt flag
         PIR1bits.TMR1GIF = BIT_OFF;
-        gLastCapturedValue_us = TMR1;
+        gLastCapturedValue_us = (TMR1 / T1_DIVIDER);
         TMR1 = 0;
         // Ready for new cycle time acquisition
         T1GCONbits.T1GGO = BIT_ON;
@@ -225,7 +227,7 @@ Ret Init()
     /************************************************************************/
     // Counts microseconds
     T1CONbits.TMR1CS = T1_CS_CLK_4; // Using Clk/4, Clk = 16 Mhz
-    T1CONbits.T1CKPS = T1_PS_4;     // Prescaler 1/4
+    T1CONbits.T1CKPS = T1_PS_2;     // Prescaler 1/2
     // Configure to single pulse gate mode
     // Timer 1 source from RA4
     T1GCONbits.T1GSS = 0b00;
