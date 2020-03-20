@@ -89,11 +89,6 @@
 #define BUFFER_LENGTH 5
 #define DIFFERENCE_16BIT(x, y) (abs((int16_t)((x) - (y))))
 
-typedef enum
-{
-    RET_OK = 0
-} Ret;
-
 typedef uint8_t bool8;
 
 // Increases about 16 milliseconds if no edge has been measured
@@ -107,15 +102,14 @@ volatile uint16_t gLastCapturedValue_us = 0;
 
 /* Init function */
 /* Called before any other function*/
-Ret Init();
+void Init();
 
 /* ABS to speedo cycle time conversion */
 /* Returns input value times 2,348 */
 uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us);
 
 /* Sets new output frequency */
-Ret SetOutputFrequency(uint16_t cycleTime_us);
-
+void SetOutputFrequency(uint16_t cycleTime_us);
 
 /*****************************************************************************/
 void __interrupt() ISR(void)
@@ -185,7 +179,7 @@ void __interrupt() ISR(void)
     }
 }
 
-Ret Init()
+void Init()
 {
     /************************************************************************/
     /************************** Clock settings ******************************/
@@ -258,11 +252,9 @@ Ret Init()
     PWM1CONbits.EN = BIT_ON; // Enable PWM1
     PWM1PR = 10;
     PWM1PH = 5;
-
-    return RET_OK;
 }
 
-Ret SetOutputFrequency(uint16_t cycleTime_us)
+void SetOutputFrequency(uint16_t cycleTime_us)
 {
     if (cycleTime_us > 1)
     {
@@ -271,8 +263,6 @@ Ret SetOutputFrequency(uint16_t cycleTime_us)
         // Enable interrupt where new time is set
         PWM1INTEbits.PRIE = BIT_ON;
     }
-
-    return RET_OK;
 }
 
 inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
@@ -284,7 +274,7 @@ inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
 int main(int argc, char **argv)
 {
     // Initialize registers
-    (void)Init();
+    Init();
 
     while (TRUE)
     {
@@ -300,13 +290,11 @@ int main(int argc, char **argv)
             if (lastSetValue_us != gLastCapturedValue_us)
             {
                 INTCONbits.GIE = BIT_OFF;
-                PORTAbits.RA2 = 1;
                 uint16_t outputCycleTime_us =
                     ABSToSpeedo_us(gLastCapturedValue_us);
-                (void)SetOutputFrequency(outputCycleTime_us);
+                SetOutputFrequency(outputCycleTime_us);
                 START_OUTPUT;
                 lastSetValue_us = gLastCapturedValue_us;
-                PORTAbits.RA2 = 0;
                 INTCONbits.GIE = BIT_ON;
             }
         }
@@ -315,5 +303,6 @@ int main(int argc, char **argv)
             STOP_OUTPUT;
         }
     }
+    
     return (EXIT_SUCCESS);
 }
