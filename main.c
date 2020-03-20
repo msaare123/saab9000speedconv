@@ -64,6 +64,7 @@
 #define PWM_PRESCALER_2 0b001
 #define START_OUTPUT (PWM1CONbits.EN = 1)
 #define STOP_OUTPUT (PWM1CONbits.EN = 0)
+#define STOP_TIMER_MAX_OVERFLOW_COUNT 2
 
 #define TRISA_INPUT 1
 #define TRISA_OUTPUT 0
@@ -93,7 +94,9 @@ typedef enum
 
 typedef uint8_t bool8;
 
-// Timer 1 has overflown
+// Increases about 16 milliseconds if no edge has been measured
+volatile uint8_t gTimer0OverFlowCount = 0;
+// Timer1 or Timer0 has overflown
 volatile bool8 gbStopped = FALSE;
 // Current output time
 volatile uint16_t gOutputPeriodTime_us = 0;
@@ -155,6 +158,9 @@ void __interrupt() ISR(void)
         // Ready for new cycle time acquisition
         T1GCONbits.T1GGO = BIT_ON;
         gbStopped = FALSE;
+        // Reset stoptimer (TMR0)
+        gTimer0OverFlowCount = 0;
+        TMR0 = 0;
     }
 
     if (PIR1bits.TMR1IF)
@@ -163,6 +169,17 @@ void __interrupt() ISR(void)
         // Clear interrupt flag
         PIR1bits.TMR1IF = BIT_OFF;
         gbStopped = TRUE;
+    }
+
+    if (INTCONbits.TMR0IF)
+    {
+        // Timer 0 overflow interrupt
+        // Clear interrupt flag
+        INTCONbits.TMR0IF = BIT_OFF;
+        if (gTimer0OverFlowCount < STOP_TIMER_MAX_OVERFLOW_COUNT)
+        {
+            gTimer0OverFlowCount++;
+        }
     }
 }
 
@@ -194,6 +211,14 @@ Ret Init()
     PIE1bits.TMR1GIE = BIT_ON; // Timer gate interrupt enable
     PIE1bits.TMR1IE = BIT_ON;  // Timer overflow interrupt enable
     INTCONbits.PEIE = BIT_ON;
+
+    /************************************************************************/
+    /*************************** Timer 0 settings ***************************/
+    /************************************************************************/
+    OPTION_REGbits.TMR0CS = BIT_OFF; // Use Clk/4
+    OPTION_REGbits.PS = 0b111;
+    OPTION_REGbits.PSA = BIT_OFF; // Use prescaler above
+    INTCONbits.TMR0IE = BIT_ON;   // OF-interrupt enable
 
     /************************************************************************/
     /*************************** Timer 1 settings ***************************/
@@ -261,6 +286,11 @@ int main(int argc, char **argv)
 
     while (TRUE)
     {
+        if (gTimer0OverFlowCount >= STOP_TIMER_MAX_OVERFLOW_COUNT)
+        {
+            gbStopped = TRUE;
+        }
+
         // Calculate new output cycle time
         if (gLastCapturedValue_us < INPUT_CYCLE_TIME_LIMIT && !gbStopped)
         {
