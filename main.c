@@ -2,9 +2,27 @@
  * File:   main.c
  * Author: mattis
  *
+ * SAAB 9000 ABS Wheel signal to speedometer converter
+ *
+ * This pulse conversion enables use of ABS wheel signal as a main speed signal
+ * instead of signal coming from transmission.
+ *
+ *                   PIC12F1571
+ *                    --------
+ *               VDD |o       | VSS
+ *    Button 1 - RA5 |        | RA0 - Button 2
+ * Pulse input - RA4 |        | RA1 - Pulse output
+ *        MCLR - RA3 |        | RA2 - Status LED
+ *                    --------
+ *
+ * Saab 9000 speedometer needs 9828 pulses per kilometer
+ * ABS sensor is producing 23080 pulses per kilometer
+ * So input signal frequency needs to be divided by 2,348 for output
+ *
  * Created on January 30, 2020, 10:46 PM
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,21 +59,19 @@
 #pragma config STVREN = ON
 // Brown-out Reset Voltage Selection (Brown-out Reset Voltage (Vbor), low trip
 // point selected.)
-#pragma config BORV = LO
+#pragma config BORV = HI
 // Low Power Brown-out Reset enable bit (LPBOR is disabled)
-#pragma config LPBOREN = OFF
+#pragma config LPBOREN = ON
 // Low-Voltage Programming Enable (Low-voltage programming enabled)
-#pragma config LVP = OFF
+#pragma config LVP = ON
 
 // #pragma config statements should precede project file includes.
 // Use project enums instead of #define for ON and OFF.
 
 #include <xc.h>
 
-#define TRUE 1
-#define FALSE 0
-
 #define ABS_TO_SPEEDO_DIVIDER 601 // 2,348 * 256
+#define OFFSET_STEP
 #define PWM_MODE_TOGGLE_ON_MATCH 0b10
 #define PWM_SC_HFOSC 0b01
 #define PWM_PRESCALER_16 0b100
@@ -89,16 +105,25 @@
 #define BUFFER_LENGTH 5
 #define DIFFERENCE_16BIT(x, y) (abs((int16_t)((x) - (y))))
 
-typedef uint8_t bool8;
+#define BUTTON_UP_PIN !PORTAbits.RA0
+#define BUTTON_DOWN_PIN !PORTAbits.RA5
+#define STATUS_LED_PIN PORTAbits.RA2
+
+typedef enum
+{
+    MODE_NORMAL,
+    MODE_OFFSET_INPUT
+} InputMode;
 
 // Increases about 16 milliseconds if no edge has been measured
 volatile uint8_t gTimer0OverFlowCount = 0;
-// Timer1 or Timer0 has overflown
-volatile bool8 gbStopped = FALSE;
+// Timer1 has overflown when pulse length is too long
+volatile bool gbTooLongPulse = false;
 // Current output time
 volatile uint16_t gOutputPeriodTime_us = 0;
 volatile uint16_t gOutputDutyCycleTime_us = 0;
 volatile uint16_t gLastCapturedValue_us = 0;
+int16_t gOffset_us = 0;
 
 /* Init function */
 /* Called before any other function*/
@@ -110,6 +135,24 @@ uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us);
 
 /* Sets new output frequency */
 void SetOutputFrequency(uint16_t cycleTime_us);
+
+/* Checks if up/down button is pressed and then released */
+void CheckButtonStates(bool *pbUpReleased, bool *pbDownReleased);
+
+/* Checks if offset mode is requested by pressing both buttons for 3 seconds */
+bool OffsetModeIsRequested();
+
+/* Update status led state */
+void UpdateStatusLed(InputMode currentMode);
+
+/* Check if no pulses have received for some while */
+bool IsStopped();
+
+/* Handle user offset setting, buttons and led */
+void HandleUserInterface();
+
+/* Calculate new output frequency based on last received input */
+void CalculateAndSetNewOutput();
 
 /*****************************************************************************/
 void __interrupt() ISR(void)
@@ -153,9 +196,10 @@ void __interrupt() ISR(void)
         TMR1 = 0;
         // Ready for new cycle time acquisition
         T1GCONbits.T1GGO = BIT_ON;
-        gbStopped = FALSE;
         // Reset stoptimer (TMR0)
         gTimer0OverFlowCount = 0;
+        // Reset too long pulse flag
+        gbTooLongPulse = false;
         TMR0 = 0;
     }
 
@@ -164,7 +208,7 @@ void __interrupt() ISR(void)
         // Timer 1 overflow interrupt
         // Clear interrupt flag
         PIR1bits.TMR1IF = BIT_OFF;
-        gbStopped = TRUE;
+        gbTooLongPulse = true;
     }
 
     if (INTCONbits.TMR0IF)
@@ -196,8 +240,10 @@ void Init()
     PORTA = 0;
     TRISA = 0;
     ANSELA = 0;
-    // RA1 PWM 1 output, RA4 for timer gate
-    TRISA = (TRISA_INPUT << 4 | TRISA_OUTPUT << 1 | TRISA_OUTPUT << 2);
+    WPUA = (BIT_ON << 5 | BIT_ON << 0);
+    // RA1 PWM 1 output, RA4 for timer gate, RA2 LED, RA5 button, RA0 Button
+    TRISA = (TRISA_INPUT << 4 | TRISA_OUTPUT << 1 | TRISA_OUTPUT << 2 |
+             TRISA_INPUT << 5 | TRISA_INPUT << 0);
 
     /************************************************************************/
     /************************** Interrupt settings **************************/
@@ -241,6 +287,13 @@ void Init()
     T1GCONbits.T1GGO = BIT_ON;
 
     /************************************************************************/
+    /*************************** Timer 2 settings ***************************/
+    /************************************************************************/
+    T2CONbits.T2CKPS = 0b10; // 1/64 prescaler 11=1/256 10=1/128 01=1/64
+    TMR2 = 0;
+    T2CONbits.TMR2ON = BIT_ON; // Timer2 on
+
+    /************************************************************************/
     /**************************** PWM 1 settings ****************************/
     /************************************************************************/
     PWM1CLKCONbits.CS = PWM_SC_HFOSC; // 16 MHz
@@ -267,8 +320,210 @@ void SetOutputFrequency(uint16_t cycleTime_us)
 
 inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
 {
-    return (uint16_t)(((uint32_t)inputCycleTime_us * ABS_TO_SPEEDO_DIVIDER) /
+    return (uint16_t)(((uint32_t)inputCycleTime_us * (ABS_TO_SPEEDO_DIVIDER + gOffset_us)) /
                       256);
+}
+
+bool IsStopped()
+{
+    bool ret = false;
+    if (gTimer0OverFlowCount >= STOP_TIMER_MAX_OVERFLOW_COUNT)
+    {
+        // T0 has not been cleared. No pulses received for a while
+        ret = true;
+    }
+    else if (gbTooLongPulse)
+    {
+        // Input pulse length counter overflown. Too long pulse.
+        ret = true;
+    }
+    else
+    {
+        // Still running
+        if (gLastCapturedValue_us >= INPUT_CYCLE_TIME_LIMIT)
+        {
+            // Too high captured frequency. Stop output.
+            ret = true;
+        }
+    }
+
+    return ret;
+}
+
+void CalculateAndSetNewOutput()
+{
+    // Calculate new output cycle time
+    static uint16_t lastSetValue_us = 0;
+    if (lastSetValue_us != gLastCapturedValue_us)
+    {
+        INTCONbits.GIE = BIT_OFF;
+        uint16_t outputCycleTime_us = ABSToSpeedo_us(gLastCapturedValue_us);
+        SetOutputFrequency(outputCycleTime_us);
+        lastSetValue_us = gLastCapturedValue_us;
+        INTCONbits.GIE = BIT_ON;
+    }
+}
+
+void HandleUserInterface()
+{
+    if (TMR2 >= 61)
+    {
+        // Not time critical, so no interrupt used
+        TMR2 = 0;
+        static uint8_t millisecondCounter = 0;
+        millisecondCounter++;
+
+        static InputMode inputMode = MODE_NORMAL;
+        static bool bIdleForLastSecond = true;
+        bool bButtonUpActive = false;
+        bool bButtonDownActive = false;
+
+        if (millisecondCounter % 10)
+        {
+            // 10 ms branch
+            if (inputMode == MODE_OFFSET_INPUT)
+            {
+                CheckButtonStates(&bButtonUpActive, &bButtonDownActive);
+                if (bButtonUpActive)
+                {
+                    gOffset_us++;
+                    bIdleForLastSecond = false;
+                }
+                else if (bButtonDownActive)
+                {
+                    gOffset_us--;
+                    bIdleForLastSecond = false;
+                }
+                else
+                {
+                    bIdleForLastSecond = true;
+                }
+            }
+            else
+            {
+                // Do nothing when on normal operation
+            }
+        }
+
+        if (millisecondCounter >= 100)
+        {
+            // 100 ms branch
+            millisecondCounter = 0;
+
+            static bool bOffsetModeRequested = false;
+
+            if (!bOffsetModeRequested)
+            {
+                bOffsetModeRequested = OffsetModeIsRequested();
+            }
+
+            if ((inputMode == MODE_NORMAL) && bOffsetModeRequested)
+            {
+                // Turn led of to signal user that mode has changed but
+                // don't actually change mode before both buttons have been
+                // released
+                STATUS_LED_PIN = BIT_OFF;
+                if (BUTTON_UP_PIN && BUTTON_DOWN_PIN)
+                {
+                    inputMode = MODE_OFFSET_INPUT;
+                    bOffsetModeRequested = false;
+                }
+            }
+
+            static uint8_t secondCounter = 0;
+            secondCounter++;
+
+            if (secondCounter >= 10)
+            {
+                secondCounter = 0;
+                // 1 s branch
+                // Return to normal operation mode after 10 seconds idle
+                static uint8_t idleCounter_s = 0;
+                if (bIdleForLastSecond && (inputMode == MODE_OFFSET_INPUT))
+                {
+                    idleCounter_s++;
+                    if (idleCounter_s >= 10)
+                    {
+                        inputMode = MODE_NORMAL;
+                        idleCounter_s = 0;
+                    }
+                }
+                else
+                {
+                    idleCounter_s = 0;
+                }
+
+                UpdateStatusLed(inputMode);
+            }
+        }
+    }
+}
+
+void CheckButtonStates(bool *pbUpReleased, bool *pbDownReleased)
+{
+    // Check button state
+    static bool bLastButtonUpState = false;
+    static bool bLastButtonDownState = false;
+    bool bButtonUpState = BUTTON_UP_PIN;
+    bool bButtonDownState = BUTTON_DOWN_PIN;
+
+    if (!bButtonUpState && bLastButtonUpState)
+    {
+        *pbUpReleased = true;
+    }
+    else
+    {
+        *pbUpReleased = false;
+    }
+
+    if (!bButtonDownState && bLastButtonDownState)
+    {
+        *pbDownReleased = true;
+    }
+    else
+    {
+        *pbDownReleased = false;
+    }
+
+    bLastButtonUpState = bButtonUpState;
+    bLastButtonDownState = bButtonDownState;
+}
+
+bool OffsetModeIsRequested()
+{
+    bool ret = false;
+    static uint8_t modeChangeTimer = 0;
+    if (BUTTON_UP_PIN && BUTTON_DOWN_PIN)
+    {
+        modeChangeTimer++;
+        // Called on every 100 ms
+        if (modeChangeTimer > 30)
+        {
+            // Both buttons have been pressed for 3 seconds
+            ret = true;
+        }
+    }
+    else
+    {
+        modeChangeTimer = 0;
+    }
+
+    return ret;
+}
+
+void UpdateStatusLed(InputMode currentMode)
+{
+    // Called on every second
+    if (currentMode == MODE_OFFSET_INPUT)
+    {
+        static bool ledState = BIT_OFF;
+        ledState = !ledState;
+        STATUS_LED_PIN = ledState;
+    }
+    else
+    {
+        STATUS_LED_PIN = BIT_ON;
+    }
 }
 
 int main(int argc, char **argv)
@@ -276,33 +531,20 @@ int main(int argc, char **argv)
     // Initialize registers
     Init();
 
-    while (TRUE)
+    while (true)
     {
-        if (gTimer0OverFlowCount >= STOP_TIMER_MAX_OVERFLOW_COUNT)
+        if (!IsStopped())
         {
-            gbStopped = TRUE;
-        }
-
-        // Calculate new output cycle time
-        if (gLastCapturedValue_us < INPUT_CYCLE_TIME_LIMIT && !gbStopped)
-        {
-            static uint16_t lastSetValue_us = 0;
-            if (lastSetValue_us != gLastCapturedValue_us)
-            {
-                INTCONbits.GIE = BIT_OFF;
-                uint16_t outputCycleTime_us =
-                    ABSToSpeedo_us(gLastCapturedValue_us);
-                SetOutputFrequency(outputCycleTime_us);
-                START_OUTPUT;
-                lastSetValue_us = gLastCapturedValue_us;
-                INTCONbits.GIE = BIT_ON;
-            }
+            CalculateAndSetNewOutput();
+            START_OUTPUT;
         }
         else
         {
             STOP_OUTPUT;
         }
+
+        HandleUserInterface();
     }
-    
+
     return (EXIT_SUCCESS);
 }
