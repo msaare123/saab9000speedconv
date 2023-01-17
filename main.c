@@ -70,7 +70,8 @@
 
 #include <xc.h>
 
-#define ABS_TO_SPEEDO_DIVIDER 601 // 2,348 * 256
+#define ABS_TO_SPEEDO_DIVIDER 570 // 2,348 * 256
+#define OUTPUT_LIMIT_US 710
 #define OFFSET_STEP
 #define PWM_MODE_TOGGLE_ON_MATCH 0b10
 #define PWM_SC_HFOSC 0b01
@@ -105,8 +106,8 @@
 #define BUFFER_LENGTH 5
 #define DIFFERENCE_16BIT(x, y) (abs((int16_t)((x) - (y))))
 
-#define BUTTON_UP_PIN !PORTAbits.RA0
-#define BUTTON_DOWN_PIN !PORTAbits.RA5
+#define BUTTON_UP_PIN !PORTAbits.RA5
+#define BUTTON_DOWN_PIN !PORTAbits.RA0
 #define STATUS_LED_PIN PORTAbits.RA2
 
 typedef enum
@@ -320,7 +321,7 @@ void SetOutputFrequency(uint16_t cycleTime_us)
 
 inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
 {
-    return (uint16_t)(((uint32_t)inputCycleTime_us * (ABS_TO_SPEEDO_DIVIDER + gOffset_us)) /
+    return (uint16_t)(((uint32_t)inputCycleTime_us * ABS_TO_SPEEDO_DIVIDER) /
                       256);
 }
 
@@ -358,7 +359,14 @@ void CalculateAndSetNewOutput()
     {
         INTCONbits.GIE = BIT_OFF;
         uint16_t outputCycleTime_us = ABSToSpeedo_us(gLastCapturedValue_us);
-        SetOutputFrequency(outputCycleTime_us);
+        if (outputCycleTime_us > OUTPUT_LIMIT_US)
+        {
+            SetOutputFrequency(outputCycleTime_us);
+        }
+        else
+        {
+            SetOutputFrequency(OUTPUT_LIMIT_US);
+        }
         lastSetValue_us = gLastCapturedValue_us;
         INTCONbits.GIE = BIT_ON;
     }
@@ -366,7 +374,7 @@ void CalculateAndSetNewOutput()
 
 void HandleUserInterface()
 {
-    if (TMR2 >= 61)
+    if (TMR2 >= 122)
     {
         // Not time critical, so no interrupt used
         TMR2 = 0;
@@ -396,7 +404,7 @@ void HandleUserInterface()
                 }
                 else
                 {
-                    bIdleForLastSecond = true;
+                    // Do nothing
                 }
             }
             else
@@ -410,14 +418,7 @@ void HandleUserInterface()
             // 100 ms branch
             millisecondCounter = 0;
 
-            static bool bOffsetModeRequested = false;
-
-            if (!bOffsetModeRequested)
-            {
-                bOffsetModeRequested = OffsetModeIsRequested();
-            }
-
-            if ((inputMode == MODE_NORMAL) && bOffsetModeRequested)
+            if ((inputMode == MODE_NORMAL) && OffsetModeIsRequested())
             {
                 // Turn led of to signal user that mode has changed but
                 // don't actually change mode before both buttons have been
@@ -426,12 +427,16 @@ void HandleUserInterface()
                 if (BUTTON_UP_PIN && BUTTON_DOWN_PIN)
                 {
                     inputMode = MODE_OFFSET_INPUT;
-                    bOffsetModeRequested = false;
                 }
             }
 
             static uint8_t secondCounter = 0;
             secondCounter++;
+            
+            if (secondCounter == 5)
+            {
+                UpdateStatusLed(inputMode);
+            }
 
             if (secondCounter >= 10)
             {
@@ -450,10 +455,9 @@ void HandleUserInterface()
                 }
                 else
                 {
+                    bIdleForLastSecond = true;
                     idleCounter_s = 0;
                 }
-
-                UpdateStatusLed(inputMode);
             }
         }
     }
