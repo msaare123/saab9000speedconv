@@ -75,6 +75,7 @@
 #define OFFSET_STEP
 #define PWM_MODE_TOGGLE_ON_MATCH 0b10
 #define PWM_SC_HFOSC 0b01
+#define PWM_PRESCALER_32 0b101
 #define PWM_PRESCALER_16 0b100
 #define PWM_PRESCALER_8 0b011
 #define PWM_PRESCALER_4 0b010
@@ -86,12 +87,14 @@
 #define TRISA_INPUT 1
 #define TRISA_OUTPUT 0
 #define CLK_8_MHZ 0b1110
+#define CLK_16_MHZ 0b1111
 #define CLK_SRC_INTOSC 0b10
 #define BIT_ON 1
 #define BIT_OFF 0
 #define TRIGGER_FALLING_EDGE 0
 #define T1_CS_CLK_4 0b00
 #define T1_CS_CLK_1 0b01
+#define T1_PS_8 0b11
 #define T1_PS_4 0b10
 #define T1_PS_2 0b01
 #define T1_PS_1 0b00
@@ -129,10 +132,6 @@ int16_t gOffset_us = 0;
 /* Init function */
 /* Called before any other function*/
 void Init();
-
-/* ABS to speedo cycle time conversion */
-/* Returns input value times 2,348 */
-uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us);
 
 /* Sets new output frequency */
 void SetOutputFrequency(uint16_t cycleTime_us);
@@ -229,8 +228,8 @@ void Init()
     /************************************************************************/
     /************************** Clock settings ******************************/
     /************************************************************************/
-    // 1110, Set clock to 8 MHz
-    OSCCONbits.IRCF = CLK_8_MHZ;
+    // 1111, Set clock to 16 MHz
+    OSCCONbits.IRCF = CLK_16_MHZ;
     // Select Internal oscillator
     OSCCONbits.SCS = CLK_SRC_INTOSC;
 
@@ -259,7 +258,7 @@ void Init()
     /*************************** Timer 0 settings ***************************/
     /************************************************************************/
     OPTION_REGbits.TMR0CS = BIT_OFF; // Use Clk/4
-    OPTION_REGbits.PS = 0b111;
+    OPTION_REGbits.PS = 0b111; // Clk/256
     OPTION_REGbits.PSA = BIT_OFF; // Use prescaler above
     INTCONbits.TMR0IE = BIT_ON;   // OF-interrupt enable
 
@@ -267,8 +266,8 @@ void Init()
     /*************************** Timer 1 settings ***************************/
     /************************************************************************/
     // Counts microseconds
-    T1CONbits.TMR1CS = T1_CS_CLK_4; // Using Clk/4, Clk = 16 Mhz
-    T1CONbits.T1CKPS = T1_PS_2;     // Prescaler 1/2
+    T1CONbits.TMR1CS = T1_CS_CLK_4; // Using Clk/4
+    T1CONbits.T1CKPS = T1_PS_4;     // Prescaler 4
     // Configure to single pulse gate mode
     // Timer 1 source from RA4
     T1GCONbits.T1GSS = 0b00;
@@ -290,7 +289,7 @@ void Init()
     /************************************************************************/
     /*************************** Timer 2 settings ***************************/
     /************************************************************************/
-    T2CONbits.T2CKPS = 0b10; // 1/64 prescaler 11=1/256 10=1/128 01=1/64
+    T2CONbits.T2CKPS = 0b11; // 1/64 prescaler 11=1/256 10=1/128 01=1/64
     TMR2 = 0;
     T2CONbits.TMR2ON = BIT_ON; // Timer2 on
 
@@ -298,7 +297,7 @@ void Init()
     /**************************** PWM 1 settings ****************************/
     /************************************************************************/
     PWM1CLKCONbits.CS = PWM_SC_HFOSC; // 16 MHz
-    PWM1CLKCONbits.PS = PWM_PRESCALER_16;
+    PWM1CLKCONbits.PS = PWM_PRESCALER_32;
     PWM1CONbits.MODE = PWM_MODE_TOGGLE_ON_MATCH;
     PIE3bits.PWM1IE = BIT_ON;
     PWM1INTEbits.PRIE = BIT_ON;
@@ -308,49 +307,6 @@ void Init()
     PWM1PH = 5;
 }
 
-void SetOutputFrequency(uint16_t cycleTime_us)
-{
-    if (cycleTime_us > 1)
-    {
-        gOutputPeriodTime_us = cycleTime_us;
-        gOutputDutyCycleTime_us = DUTY_CYCLE_50_PERCENT(cycleTime_us);
-        // Enable interrupt where new time is set
-        PWM1INTEbits.PRIE = BIT_ON;
-    }
-}
-
-inline uint16_t ABSToSpeedo_us(uint16_t inputCycleTime_us)
-{
-    return (uint16_t)(((uint32_t)inputCycleTime_us * ABS_TO_SPEEDO_DIVIDER) /
-                      256);
-}
-
-bool IsStopped()
-{
-    bool ret = false;
-    if (gTimer0OverFlowCount >= STOP_TIMER_MAX_OVERFLOW_COUNT)
-    {
-        // T0 has not been cleared. No pulses received for a while
-        ret = true;
-    }
-    else if (gbTooLongPulse)
-    {
-        // Input pulse length counter overflown. Too long pulse.
-        ret = true;
-    }
-    else
-    {
-        // Still running
-        if (gLastCapturedValue_us >= INPUT_CYCLE_TIME_LIMIT)
-        {
-            // Too high captured frequency. Stop output.
-            ret = true;
-        }
-    }
-
-    return ret;
-}
-
 void CalculateAndSetNewOutput()
 {
     // Calculate new output cycle time
@@ -358,15 +314,10 @@ void CalculateAndSetNewOutput()
     if (lastSetValue_us != gLastCapturedValue_us)
     {
         INTCONbits.GIE = BIT_OFF;
-        uint16_t outputCycleTime_us = ABSToSpeedo_us(gLastCapturedValue_us);
-        if (outputCycleTime_us > OUTPUT_LIMIT_US)
-        {
-            SetOutputFrequency(outputCycleTime_us);
-        }
-        else
-        {
-            SetOutputFrequency(OUTPUT_LIMIT_US);
-        }
+        gOutputPeriodTime_us = (uint16_t)(((uint24_t)gLastCapturedValue_us * ABS_TO_SPEEDO_DIVIDER) / 256);
+        gOutputDutyCycleTime_us = DUTY_CYCLE_50_PERCENT(gOutputPeriodTime_us);
+        // Enable interrupt where new time is set
+        PWM1INTEbits.PRIE = BIT_ON;
         lastSetValue_us = gLastCapturedValue_us;
         INTCONbits.GIE = BIT_ON;
     }
@@ -537,17 +488,23 @@ int main(int argc, char **argv)
 
     while (true)
     {
-        if (!IsStopped())
+        // Check if stopped
+        if (gTimer0OverFlowCount >= STOP_TIMER_MAX_OVERFLOW_COUNT || 
+            gLastCapturedValue_us >= INPUT_CYCLE_TIME_LIMIT ||
+            gbTooLongPulse)
+        {
+            // T0 has not been cleared. No pulses received for a while or
+            // too high captured frequency or
+            // input pulse length counter overflown. Too long pulse.
+            STOP_OUTPUT;
+            // Only handle user interface in stopped mode
+            HandleUserInterface();
+        }
+        else
         {
             CalculateAndSetNewOutput();
             START_OUTPUT;
         }
-        else
-        {
-            STOP_OUTPUT;
-        }
-
-        HandleUserInterface();
     }
 
     return (EXIT_SUCCESS);
